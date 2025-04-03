@@ -21,8 +21,8 @@ use lazy_static::*;
 use switch::__switch;
 pub use task::{TaskControlBlock, TaskStatus};
 
+use crate::task::task::SYSCALL_NUMBER;
 pub use context::TaskContext;
-
 /// The task manager, where all the tasks are managed.
 ///
 /// Functions implemented on `TaskManager` deals with all task state transitions
@@ -54,6 +54,7 @@ lazy_static! {
         let mut tasks = [TaskControlBlock {
             task_cx: TaskContext::zero_init(),
             task_status: TaskStatus::UnInit,
+            syscalls: [0; SYSCALL_NUMBER],
         }; MAX_APP_NUM];
         for (i, task) in tasks.iter_mut().enumerate() {
             task.task_cx = TaskContext::goto_restore(init_app_cx(i));
@@ -135,6 +136,40 @@ impl TaskManager {
             panic!("All applications completed!");
         }
     }
+
+    /// record task syscall by number
+    fn record_task_syscall(&self, syscall_number: usize) {
+        let syscall_idx: usize = match syscall_number {
+            64 => 0,
+            93 => 1,
+            124 => 2,
+            169 => 3,
+            410 => 4,
+            // 其他值默认返回原值或指定值
+            _ => 5, // 或者 panic!("Unmapped value: {}", input)
+        };
+
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        inner.tasks[current].syscalls[syscall_idx] += 1;
+    }
+
+    /// enquire syscall by number
+    fn enquire_task_syscall(&self, syscall_number: usize) -> usize {
+        let syscall_idx: usize = match syscall_number {
+            64 => 0,
+            93 => 1,
+            124 => 2,
+            169 => 3,
+            410 => 4,
+            // 其他值默认返回原值或指定值
+            _ => 5, // 或者 panic!("Unmapped value: {}", input)
+        };
+
+        let inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        inner.tasks[current].syscalls[syscall_idx]
+    }
 }
 
 /// Run the first task in task list.
@@ -168,4 +203,14 @@ pub fn suspend_current_and_run_next() {
 pub fn exit_current_and_run_next() {
     mark_current_exited();
     run_next_task();
+}
+
+/// Record a task syscall
+pub fn record_syscall(syscall_number: usize) {
+    TASK_MANAGER.record_task_syscall(syscall_number);
+}
+
+/// Enquire a task syscall use number
+pub fn enquire_syscall(syscall_number: usize) -> usize {
+    TASK_MANAGER.enquire_task_syscall(syscall_number)
 }
