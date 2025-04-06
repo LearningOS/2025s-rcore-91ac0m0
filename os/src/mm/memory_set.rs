@@ -262,6 +262,59 @@ impl MemorySet {
             false
         }
     }
+
+    ///map in memoryset
+    pub fn mmap_inner(&mut self, va_start: usize, len: usize, perm: usize) -> isize {
+        let start_vpn: VirtAddr = va_start.into();
+        let end_vpn: VirtAddr = (va_start + len).into();
+        let range = VPNRange::new(start_vpn.floor(), end_vpn.ceil());
+
+        for map_area in &self.areas {
+            if map_area.vpn_range.overlaps_with(&range) {
+                return -1;
+            }
+        }
+
+        let mut map_perm = MapPermission::U;
+        if perm & 1 << 0 != 0 {
+            map_perm |= MapPermission::R;
+        }
+
+        if perm & 1 << 1 != 0 {
+            map_perm |= MapPermission::W;
+        }
+
+        if perm & 1 << 2 != 0 {
+            map_perm |= MapPermission::X;
+        }
+        self.push(
+            MapArea::new(
+                start_vpn.floor().into(),
+                end_vpn.ceil().into(),
+                MapType::Framed,
+                map_perm,
+            ),
+            None,
+        );
+        0
+    }
+
+    ///munmap in memoryset
+    pub fn munmap_inner(&mut self, va_start: usize, len: usize) -> isize {
+        println!("xxxxxxxx {} {}", va_start, len);
+        let start_vpn: VirtAddr = va_start.into();
+        let end_vpn: VirtAddr = (va_start + len).into();
+        let range = VPNRange::new(start_vpn.floor(), end_vpn.ceil());
+
+        for (idx, map_area) in self.areas.iter_mut().enumerate() {
+            if map_area.vpn_range.equal(&range) {
+                map_area.unmap(&mut self.page_table);
+                self.areas.remove(idx);
+                return 0;
+            }
+        }
+        -1
+    }
 }
 /// map area structure, controls a contiguous piece of virtual memory
 pub struct MapArea {
@@ -302,7 +355,6 @@ impl MapArea {
         let pte_flags = PTEFlags::from_bits(self.map_perm.bits).unwrap();
         page_table.map(vpn, ppn, pte_flags);
     }
-    #[allow(unused)]
     pub fn unmap_one(&mut self, page_table: &mut PageTable, vpn: VirtPageNum) {
         if self.map_type == MapType::Framed {
             self.data_frames.remove(&vpn);
@@ -314,7 +366,6 @@ impl MapArea {
             self.map_one(page_table, vpn);
         }
     }
-    #[allow(unused)]
     pub fn unmap(&mut self, page_table: &mut PageTable) {
         for vpn in self.vpn_range {
             self.unmap_one(page_table, vpn);

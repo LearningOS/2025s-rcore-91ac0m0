@@ -18,11 +18,10 @@ use crate::loader::{get_app_data, get_num_app};
 use crate::sync::UPSafeCell;
 use crate::trap::TrapContext;
 use alloc::vec::Vec;
+pub use context::TaskContext;
 use lazy_static::*;
 use switch::__switch;
 pub use task::{TaskControlBlock, TaskStatus};
-
-pub use context::TaskContext;
 
 /// The task manager, where all the tasks are managed.
 ///
@@ -153,6 +152,45 @@ impl TaskManager {
             panic!("All applications completed!");
         }
     }
+    /// record task syscall by number
+    fn record_task_syscall(&self, syscall_number: usize) {
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        for info in &mut inner.tasks[current].syscalls.iter_mut() {
+            if info.id == syscall_number {
+                info.times += 1;
+                return;
+            } else if info.times == 0 {
+                info.id = syscall_number;
+                info.times = 1;
+                return;
+            }
+        }
+    }
+
+    /// enquire syscall by number
+    fn enquire_task_syscall(&self, syscall_number: usize) -> usize {
+        let inner: core::cell::RefMut<'_, TaskManagerInner> = self.inner.exclusive_access();
+        let current = inner.current_task;
+        for info in inner.tasks[current].syscalls.iter() {
+            if info.id == syscall_number {
+                return info.times;
+            }
+        }
+        0
+    }
+    fn sys_mmap_inner(&self, va_start: usize, len: usize, perm: usize) -> isize {
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        let current_task = &mut inner.tasks[current];
+        current_task.memory_set.mmap_inner(va_start, len, perm)
+    }
+    fn sys_munmap_inner(&self, start: usize, len: usize) -> isize {
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        let current_task = &mut inner.tasks[current];
+        current_task.memory_set.munmap_inner(start, len)
+    }
 }
 
 /// Run the first task in task list.
@@ -192,7 +230,6 @@ pub fn exit_current_and_run_next() {
 pub fn current_user_token() -> usize {
     TASK_MANAGER.get_current_token()
 }
-
 /// Get the current 'Running' task's trap contexts.
 pub fn current_trap_cx() -> &'static mut TrapContext {
     TASK_MANAGER.get_current_trap_cx()
@@ -201,4 +238,23 @@ pub fn current_trap_cx() -> &'static mut TrapContext {
 /// Change the current 'Running' task's program break
 pub fn change_program_brk(size: i32) -> Option<usize> {
     TASK_MANAGER.change_current_program_brk(size)
+}
+
+/// Record a task syscall
+pub fn record_syscall(syscall_number: usize) {
+    TASK_MANAGER.record_task_syscall(syscall_number);
+}
+
+/// Enquire a task syscall use number
+pub fn enquire_syscall(syscall_number: usize) -> usize {
+    TASK_MANAGER.enquire_task_syscall(syscall_number)
+}
+
+/// add map to current task
+pub fn syscall_mmap_inner(va_start: usize, len: usize, perm: usize) -> isize {
+    TASK_MANAGER.sys_mmap_inner(va_start, len, perm)
+}
+/// munmap to current task
+pub fn syscall_munmap_inner(start: usize, len: usize) -> isize {
+    TASK_MANAGER.sys_munmap_inner(start, len)
 }

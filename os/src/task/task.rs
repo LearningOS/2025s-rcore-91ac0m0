@@ -5,7 +5,7 @@ use crate::mm::{
     kernel_stack_position, MapPermission, MemorySet, PhysPageNum, VirtAddr, KERNEL_SPACE,
 };
 use crate::trap::{trap_handler, TrapContext};
-
+pub const SYSCALL_NUMBER: usize = 9;
 /// The task control block (TCB) of a task.
 pub struct TaskControlBlock {
     /// Save task context
@@ -28,6 +28,15 @@ pub struct TaskControlBlock {
 
     /// Program break
     pub program_brk: usize,
+
+    /// The syscall recorder
+    pub syscalls: [SyscallInfo; SYSCALL_NUMBER],
+}
+
+#[derive(Copy, Clone)]
+pub struct SyscallInfo {
+    pub id: usize,
+    pub times: usize,
 }
 
 impl TaskControlBlock {
@@ -63,6 +72,7 @@ impl TaskControlBlock {
             base_size: user_sp,
             heap_bottom: user_sp,
             program_brk: user_sp,
+            syscalls: [SyscallInfo { id: 0, times: 0 }; SYSCALL_NUMBER],
         };
         // prepare TrapContext in user space
         let trap_cx = task_control_block.get_trap_cx();
