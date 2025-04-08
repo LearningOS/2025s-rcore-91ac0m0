@@ -1,9 +1,11 @@
 //! Implementation of [`PageTableEntry`] and [`PageTable`].
 use super::{frame_alloc, FrameTracker, PhysAddr, PhysPageNum, StepByOne, VirtAddr, VirtPageNum};
+use crate::config::MEMORY_END;
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 use bitflags::*;
+use core::slice;
 
 bitflags! {
     /// page table entry flags
@@ -154,6 +156,14 @@ impl PageTable {
             (aligned_pa_usize + offset).into()
         })
     }
+    /// return true if pte is readable
+    pub fn pte_readable(&self, vpn: VirtPageNum) -> Option<bool> {
+        self.find_pte(vpn).map(|pte| pte.readable())
+    }
+    /// return true if pte is writable
+    pub fn pte_writeable(&self, vpn: VirtPageNum) -> Option<bool> {
+        self.find_pte(vpn).map(|pte| pte.writable())
+    }
     /// get the token from the page table
     pub fn token(&self) -> usize {
         8usize << 60 | self.root_ppn.0
@@ -212,4 +222,80 @@ pub fn translated_refmut<T>(token: usize, ptr: *mut T) -> &'static mut T {
         .translate_va(VirtAddr::from(va))
         .unwrap()
         .get_mut()
+}
+/// read from pa to va, length len
+pub fn write_to_user(token: usize, pa: *const u8, va: *const u8, len: usize) -> isize {
+    let page_table = PageTable::from_token(token);
+    let mut start = va as usize;
+    let end = start + len;
+    let mut write_n: usize = 0;
+
+    let pa_slice = unsafe { slice::from_raw_parts(pa, len) };
+
+    while start < end {
+        let start_va = VirtAddr::from(start);
+        let mut vpn = start_va.floor();
+        if let None | Some(false) = page_table.pte_writeable(vpn) {
+            return -1;
+        }
+
+        let ppn = page_table.translate(vpn).unwrap().ppn();
+        vpn.step();
+        let mut end_va: VirtAddr = vpn.into();
+        end_va = end_va.min(VirtAddr::from(end));
+        if end_va.page_offset() == 0 {
+            let src = &pa_slice[write_n..write_n + 0x1000 - start_va.page_offset()];
+            let dst = &mut ppn.get_bytes_array()[start_va.page_offset()..];
+            dst.copy_from_slice(src);
+            write_n += 0x1000 - start_va.page_offset();
+        } else {
+            let src = &pa_slice[write_n..write_n - start_va.page_offset() + end_va.page_offset()];
+            let dst = &mut ppn.get_bytes_array()[start_va.page_offset()..end_va.page_offset()];
+            dst.copy_from_slice(src);
+            write_n += end_va.page_offset() - start_va.page_offset();
+        }
+        start = end_va.into();
+    }
+    write_n as isize
+}
+
+/// read from pa to va, length len
+#[allow(unused)]
+pub fn read_from_user(token: usize, va: *const u8, pa: *mut u8, len: usize) -> isize {
+    let page_table = PageTable::from_token(token);
+    let mut start = va as usize;
+    let end = start + len;
+
+    if end >= MEMORY_END {
+        return -1;
+    }
+
+    let mut read_n = 0;
+
+    let pa_slice = unsafe { slice::from_raw_parts_mut(pa, len) };
+
+    while start < end {
+        let start_va = VirtAddr::from(start);
+        let mut vpn = start_va.floor();
+        if let Some(false) | None = page_table.pte_readable(vpn) {
+            return -1;
+        }
+        let ppn = page_table.translate(vpn).unwrap().ppn();
+        vpn.step();
+        let mut end_va: VirtAddr = vpn.into();
+        end_va = end_va.min(VirtAddr::from(end));
+        if end_va.page_offset() == 0 {
+            let dst = &mut pa_slice[read_n..read_n + 0x1000 - start_va.page_offset()];
+            let src = &ppn.get_bytes_array()[start_va.page_offset()..];
+            dst.copy_from_slice(src);
+            read_n += 0x1000 - start_va.page_offset();
+        } else {
+            let dst = &mut pa_slice[read_n..read_n - start_va.page_offset() + end_va.page_offset()];
+            let src = &ppn.get_bytes_array()[start_va.page_offset()..end_va.page_offset()];
+            dst.copy_from_slice(src);
+            read_n += end_va.page_offset() - start_va.page_offset();
+        }
+        start = end_va.into();
+    }
+    read_n as isize
 }

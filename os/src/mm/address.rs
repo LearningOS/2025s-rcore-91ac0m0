@@ -227,6 +227,14 @@ where
     pub fn get_end(&self) -> T {
         self.r
     }
+    /// 判断两个区间是否有重叠部分
+    pub fn overlaps_with(&self, other: &Self) -> bool {
+        !(self.r <= other.l || other.r <= self.l)
+    }
+    /// 判断两个区间u是否重合
+    pub fn equal(&self, other: &Self) -> bool {
+        self.r == other.r && other.l == self.l
+    }
 }
 impl<T> IntoIterator for SimpleRange<T>
 where

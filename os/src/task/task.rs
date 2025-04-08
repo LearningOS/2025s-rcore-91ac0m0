@@ -9,6 +9,8 @@ use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 use core::cell::RefMut;
 
+const BIG_STRIDE: isize = 0x1000; // 4G
+
 /// Task control block structure
 ///
 /// Directly save the contents that will not change during running
@@ -33,6 +35,16 @@ impl TaskControlBlock {
     pub fn get_user_token(&self) -> usize {
         let inner = self.inner_exclusive_access();
         inner.memory_set.token()
+    }
+    /// sys_mmap_inner
+    pub fn sys_mmap_inner(&self, va_start: usize, len: usize, perm: usize) -> isize {
+        let mut inner = self.inner_exclusive_access();
+        inner.memory_set.mmap_inner(va_start, len, perm)
+    }
+    /// munmap inner
+    pub fn sys_munmap_inner(&self, start: usize, len: usize) -> isize {
+        let mut inner = self.inner_exclusive_access();
+        inner.memory_set.munmap_inner(start, len)
     }
 }
 
@@ -68,6 +80,12 @@ pub struct TaskControlBlockInner {
 
     /// Program break
     pub program_brk: usize,
+
+    /// pass
+    pub pass: isize,
+
+    /// current run stride
+    pub stride: isize,
 }
 
 impl TaskControlBlockInner {
@@ -118,6 +136,8 @@ impl TaskControlBlock {
                     exit_code: 0,
                     heap_bottom: user_sp,
                     program_brk: user_sp,
+                    pass: BIG_STRIDE / 16,
+                    stride: 0,
                 })
             },
         };
@@ -191,6 +211,8 @@ impl TaskControlBlock {
                     exit_code: 0,
                     heap_bottom: parent_inner.heap_bottom,
                     program_brk: parent_inner.program_brk,
+                    pass: BIG_STRIDE / 16,
+                    stride: 0,
                 })
             },
         });
@@ -206,9 +228,75 @@ impl TaskControlBlock {
         // ---- release parent PCB
     }
 
+    /// spawn a new task
+    pub fn spawn(self: &Arc<Self>, elf_data: &[u8]) -> Arc<Self> {
+        // new memory set
+        let (memory_set, user_sp, entry_point) = MemorySet::from_elf(elf_data);
+        let trap_cx_ppn = memory_set
+            .translate(VirtAddr::from(TRAP_CONTEXT_BASE).into())
+            .unwrap()
+            .ppn();
+        // alloc a pid and a kernel stack in kernel space
+        let pid_handle = pid_alloc();
+        let kernel_stack = kstack_alloc();
+        let kernel_stack_top = kernel_stack.get_top();
+        let task_control_block = Arc::new(TaskControlBlock {
+            pid: pid_handle,
+            kernel_stack,
+            inner: unsafe {
+                UPSafeCell::new(TaskControlBlockInner {
+                    trap_cx_ppn,
+                    base_size: user_sp,
+                    task_cx: TaskContext::goto_trap_return(kernel_stack_top),
+                    task_status: TaskStatus::Ready,
+                    memory_set,
+                    parent: Some(Arc::downgrade(self)),
+                    children: Vec::new(),
+                    exit_code: 0,
+                    heap_bottom: user_sp,
+                    program_brk: user_sp,
+                    pass: BIG_STRIDE / 16,
+                    stride: 0,
+                })
+            },
+        });
+        // prepare TrapContext in user space
+        let trap_cx = task_control_block.inner_exclusive_access().get_trap_cx();
+        *trap_cx = TrapContext::app_init_context(
+            entry_point,
+            user_sp,
+            KERNEL_SPACE.exclusive_access().token(),
+            kernel_stack_top,
+            trap_handler as usize,
+        );
+        // add child
+        self.inner_exclusive_access()
+            .children
+            .push(task_control_block.clone());
+        task_control_block
+    }
+
     /// get pid of process
     pub fn getpid(&self) -> usize {
         self.pid.0
+    }
+
+    ///set pass with given priority
+    /// priority: 2~16
+    pub fn set_pass_with_prio(&self, priority: isize) -> isize {
+        if priority <= 1 {
+            return -1;
+        }
+        let mut inner = self.inner_exclusive_access();
+        // pass = 0?
+        inner.pass = BIG_STRIDE / priority;
+        priority
+    }
+
+    /// add pass to stride
+    pub fn add_pass(&self) {
+        let mut inner = self.inner_exclusive_access();
+        inner.stride += inner.pass;
     }
 
     /// change the location of the program break. return None if failed.
