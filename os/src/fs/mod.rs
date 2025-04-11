@@ -4,9 +4,10 @@ mod inode;
 mod stdio;
 
 use crate::mm::UserBuffer;
+use core::any::Any;
 
 /// trait File for all file types
-pub trait File: Send + Sync {
+pub trait File: Any + Send + Sync {
     /// the file readable?
     fn readable(&self) -> bool;
     /// the file writable?
@@ -15,6 +16,8 @@ pub trait File: Send + Sync {
     fn read(&self, buf: UserBuffer) -> usize;
     /// write to the file from buf, return the number of bytes written
     fn write(&self, buf: UserBuffer) -> usize;
+    /// convert to a trait object
+    fn as_any(&self) -> &dyn Any;
 }
 
 /// The stat of a inode
@@ -46,5 +49,5 @@ bitflags! {
     }
 }
 
-pub use inode::{list_apps, open_file, OSInode, OpenFlags};
+pub use inode::{link_file, list_apps, open_file, unlink_file, OSInode, OpenFlags};
 pub use stdio::{Stdin, Stdout};

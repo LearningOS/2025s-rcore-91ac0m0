@@ -8,8 +8,10 @@ use alloc::vec::Vec;
 use spin::{Mutex, MutexGuard};
 /// Virtual filesystem layer over easy-fs
 pub struct Inode {
-    block_id: usize,
-    block_offset: usize,
+    /// Block id of the inode
+    pub block_id: usize,
+    /// Offset of the inode in the block
+    pub block_offset: usize,
     fs: Arc<Mutex<EasyFileSystem>>,
     block_device: Arc<dyn BlockDevice>,
 }
@@ -73,6 +75,101 @@ impl Inode {
             })
         })
     }
+
+    /// Link file under current inode
+    pub fn link(&self, old_name: &str, new_name: &str) -> isize {
+        // find old_name disk_inode add ref count
+        let inode = self.find(old_name);
+        if let Some(inode) = inode {
+            inode.modify_disk_inode(|disk_inode| {
+                disk_inode.ref_count += 1;
+                log::info!("link: {} ref_count: {}", old_name, disk_inode.ref_count);
+            });
+        } else {
+            return -1;
+        }
+        let mut inode_id: u32 = 0;
+        self.read_disk_inode(|disk_inode| {
+            inode_id = self.find_inode_id(old_name, disk_inode).unwrap();
+        });
+        // write dirent
+        let mut fs = self.fs.lock();
+        self.modify_disk_inode(|disk_inode| {
+            // append file in the dirent
+            let file_count = (disk_inode.size as usize) / DIRENT_SZ;
+            let new_size = (file_count + 1) * DIRENT_SZ;
+            // increase size
+            self.increase_size(new_size as u32, disk_inode, &mut fs);
+            // write dirent
+            let dirent = DirEntry::new(new_name, inode_id);
+            disk_inode.write_at(
+                file_count * DIRENT_SZ,
+                dirent.as_bytes(),
+                &self.block_device,
+            );
+        });
+        0
+    }
+
+    /// unlink file under current inode
+    pub fn unlink(&self, name: &str) -> isize {
+        // find old_name disk_inode add ref count
+        let inode = self.find(name);
+        if let Some(inode) = inode {
+            inode.modify_disk_inode(|disk_inode| {
+                disk_inode.ref_count -= 1;
+                log::info!("unlink: {} ref_count: {}", name, disk_inode.ref_count);
+                if disk_inode.ref_count == 0 {
+                    // clear the data in current inode
+                    inode.clear();
+                    // dealloc inode not implement
+                }
+            });
+        } else {
+            return -1;
+        }
+        // write dirent
+        self.modify_disk_inode(|disk_inode| {
+            // append file in the dirent
+            let file_count = (disk_inode.size as usize) / DIRENT_SZ;
+            let new_size = (file_count - 1) * DIRENT_SZ;
+            // rewrite existed dirent
+            let mut dirent = DirEntry::empty();
+            let mut offset = 0;
+            for i in 0..file_count {
+                log::trace!("unlink: i {} file_count {}", i, file_count);
+                assert_eq!(
+                    disk_inode.read_at(DIRENT_SZ * i, dirent.as_bytes_mut(), &self.block_device),
+                    DIRENT_SZ,
+                );
+                log::info!("unlink: {} inode_id {}", dirent.name(), dirent.inode_id());
+                if dirent.name() == name {
+                    log::info!("unlink: {} inode_id {}", name, dirent.inode_id());
+                    continue;
+                }
+                offset += DIRENT_SZ;
+                disk_inode.write_at(offset, dirent.as_bytes(), &self.block_device);
+            }
+            log::info!("unlink: {} offset {}", name, offset);
+            // increase size
+            let mut fs = self.fs.lock();
+            self.increase_size(new_size as u32, disk_inode, &mut fs);
+        });
+        0
+    }
+
+    /// Get the stat of current inode
+    /// inode_id: u64
+    /// is_dir: bool
+    /// nlink: u32
+    pub fn stat(&self) -> (u64, bool, u32) {
+        let fs = self.fs.lock();
+        let inode_id = fs.get_inode_id(self.block_id as u32, self.block_offset as u32);
+        let is_dir = self.read_disk_inode(|disk_inode| disk_inode.is_dir());
+        let nlink = self.read_disk_inode(|disk_inode| disk_inode.ref_count);
+        (inode_id as u64, is_dir, nlink)
+    }
+
     /// Increase the size of a disk inode
     fn increase_size(
         &self,

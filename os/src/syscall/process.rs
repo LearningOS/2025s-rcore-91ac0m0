@@ -184,10 +184,7 @@ pub fn sys_spawn(path: *const u8) -> isize {
         let new_task = parent_task.spawn(all_data.as_slice());
         let new_pid = new_task.pid.0;
         // add new task to scheduler
-        println!("111111111");
         add_task(new_task);
-        println!("222222222");
-
         new_pid as isize
     } else {
         -1
