@@ -54,6 +54,7 @@ impl Inode {
                 disk_inode.read_at(DIRENT_SZ * i, dirent.as_bytes_mut(), &self.block_device,),
                 DIRENT_SZ,
             );
+            log::info!("find: {} inode_id {}", dirent.name(), dirent.inode_id());
             if dirent.name() == name {
                 return Some(dirent.inode_id() as u32);
             }
@@ -120,9 +121,11 @@ impl Inode {
                 disk_inode.ref_count -= 1;
                 log::info!("unlink: {} ref_count: {}", name, disk_inode.ref_count);
                 if disk_inode.ref_count == 0 {
+                    log::info!("unlink: {} ref_count0", name);
                     // clear the data in current inode
-                    inode.clear();
+                    // inode.clear();
                     // dealloc inode not implement
+                    log::info!("unlink: {} dealloc inode", name);
                 }
             });
         } else {
@@ -132,28 +135,24 @@ impl Inode {
         self.modify_disk_inode(|disk_inode| {
             // append file in the dirent
             let file_count = (disk_inode.size as usize) / DIRENT_SZ;
-            let new_size = (file_count - 1) * DIRENT_SZ;
             // rewrite existed dirent
             let mut dirent = DirEntry::empty();
-            let mut offset = 0;
             for i in 0..file_count {
                 log::trace!("unlink: i {} file_count {}", i, file_count);
                 assert_eq!(
-                    disk_inode.read_at(DIRENT_SZ * i, dirent.as_bytes_mut(), &self.block_device),
+                    disk_inode.read_at(DIRENT_SZ * i, dirent.as_bytes_mut(), &self.block_device,),
                     DIRENT_SZ,
                 );
-                log::info!("unlink: {} inode_id {}", dirent.name(), dirent.inode_id());
                 if dirent.name() == name {
-                    log::info!("unlink: {} inode_id {}", name, dirent.inode_id());
-                    continue;
+                    log::info!(
+                        "found !!!!! unlink: {} inode_id {}",
+                        name,
+                        dirent.inode_id()
+                    );
+                    let mut empty = DirEntry::empty();
+                    disk_inode.write_at(DIRENT_SZ * i, empty.as_bytes(), &self.block_device);
                 }
-                offset += DIRENT_SZ;
-                disk_inode.write_at(offset, dirent.as_bytes(), &self.block_device);
             }
-            log::info!("unlink: {} offset {}", name, offset);
-            // increase size
-            let mut fs = self.fs.lock();
-            self.increase_size(new_size as u32, disk_inode, &mut fs);
         });
         0
     }
